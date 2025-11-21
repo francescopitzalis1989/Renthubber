@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect } from 'react';
 import { Header } from './components/Header';
 import { Footer } from './components/Footer';
@@ -42,9 +41,8 @@ const App: React.FC = () => {
   // --- INITIALIZATION & AUTH LISTENER ---
   useEffect(() => {
     const initApp = async () => {
-      await api.init(); // Init local storage mocks for non-user data
+      await api.init(); // Init local storage mocks
       
-      // Load Mock Data (listings, etc.)
       const l = await api.listings.getAll();
       setListings(l);
       const t = await api.wallet.getTransactions();
@@ -65,22 +63,20 @@ const App: React.FC = () => {
 
     // SUPABASE AUTH LISTENER
     const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
-      console.log("Auth State Change:", event, session?.user?.id);
+      console.log("Auth State Change:", event);
       
       if (session?.user) {
-        // User logged in or session refreshed
         try {
+          // Fetch from PUBLIC.USERS table via API Service
           const userProfile = await api.users.get(session.user.id);
-          console.log("User Profile Loaded:", userProfile);
           
           if (userProfile) {
             setCurrentUser(userProfile);
             
-            // Set initial view based on role if logging in fresh
             if (event === 'SIGNED_IN') {
                if (userProfile.roles.includes('admin')) {
                  setCurrentView('admin');
-               } else if (userProfile.roles.includes('hubber')) {
+               } else if (userProfile.role === 'hubber' || userProfile.roles.includes('hubber')) {
                  setActiveMode('hubber');
                  setCurrentView('dashboard');
                } else {
@@ -90,10 +86,9 @@ const App: React.FC = () => {
             }
           }
         } catch (error) {
-          console.error("Error fetching user profile:", error);
+          console.error("Error loading user profile:", error);
         }
       } else {
-        // User logged out
         setCurrentUser(null);
         setCurrentView('home');
         setActiveMode('renter');
@@ -105,14 +100,11 @@ const App: React.FC = () => {
 
   const handleLogout = async () => {
     await api.auth.logout();
-    // State cleanup handled by onAuthStateChange
   };
 
   // --- APP ACTIONS ---
 
   const handleLoginSuccess = (user: User) => {
-    // This is now mostly redundant due to onAuthStateChange, 
-    // but kept for explicit view switching if needed immediately after login form
     setCurrentUser(user);
     if (user.roles.includes('admin')) {
       setCurrentView('admin');
@@ -144,15 +136,11 @@ const App: React.FC = () => {
 
   const handlePayment = async (amount: number, useWallet: number) => {
     if (currentUser) {
-      // Update Local State for immediate feedback
       const newBalance = currentUser.renterBalance - useWallet;
       const updatedUser = { ...currentUser, renterBalance: newBalance };
       setCurrentUser(updatedUser);
-      
-      // Persist to DB
       await api.users.update(updatedUser);
       
-      // Add Transaction mock
       const tx: Transaction = {
          id: `tx-${Date.now()}`,
          date: new Date().toLocaleDateString('it-IT'),
@@ -194,7 +182,7 @@ const App: React.FC = () => {
   };
 
   const handleHubberActivation = async (updatedUser: User) => {
-    const saved = await api.users.update(updatedUser);
+    const saved = await api.users.upgradeToHubber(updatedUser);
     setCurrentUser(saved);
     setActiveMode('hubber');
     setCurrentView('dashboard');
@@ -245,11 +233,6 @@ const App: React.FC = () => {
 
   const handleDisputeAction = (id: string, action: 'resolve' | 'dismiss', note?: string) => {
     setDisputes(prev => prev.map(d => d.id === id ? { ...d, status: action === 'resolve' ? 'resolved' : 'dismissed', resolutionNote: note } : d));
-  };
-
-  const handleSubmitReview = (newReview: Review) => {
-    // ... (Keep logic for mock reviews for now)
-    setReviews([...reviews, newReview]);
   };
 
   const handleCreateInvoice = (newInvoice: Invoice) => {
@@ -362,7 +345,7 @@ const App: React.FC = () => {
            <AdminDashboard 
               systemConfig={systemConfig}
               onUpdateConfig={handleUpdateConfig}
-              allUsers={[currentUser || DEMO_ADMIN]} // In production this would fetch all users
+              allUsers={[currentUser || DEMO_ADMIN]} 
               allListings={listings}
               payoutRequests={payoutRequests}
               onProcessPayout={handleProcessPayout}
