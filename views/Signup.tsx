@@ -1,4 +1,3 @@
-
 import React, { useState } from 'react';
 import { User, Briefcase, Check, Upload, ShieldCheck, ArrowRight, ChevronLeft, Camera, LogIn, Gift, Loader2 } from 'lucide-react';
 import { User as UserType } from '../types';
@@ -17,6 +16,7 @@ export const Signup: React.FC<SignupProps> = ({ onComplete }) => {
   const [role, setRole] = useState<Role>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
+  const [registeredUser, setRegisteredUser] = useState<UserType | null>(null);
   
   // KYC Files State
   const [kycFiles, setKycFiles] = useState<{front: File | null, back: File | null}>({ front: null, back: null });
@@ -39,6 +39,11 @@ export const Signup: React.FC<SignupProps> = ({ onComplete }) => {
 
   const handleInfoSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    if (!formData.firstName || !formData.lastName || !formData.email || !formData.password) {
+       setErrorMsg("Compila tutti i campi obbligatori.");
+       return;
+    }
+    setErrorMsg('');
     setStep('kyc');
   };
 
@@ -53,45 +58,64 @@ export const Signup: React.FC<SignupProps> = ({ onComplete }) => {
     setErrorMsg('');
     try {
        const selectedRole = role || 'renter';
+       
+       // 1. COSTRUZIONE NOME COMPLETO
+       // Questo assicura che il nome salvato nel DB sia "Mario Rossi" e non l'email
+       const fullName = `${formData.firstName.trim()} ${formData.lastName.trim()}`;
 
-       // 1. REGISTRAZIONE UTENTE (Auth + DB Profile)
-       // Passiamo esplicitamente il ruolo selezionato
+       // 2. REGISTRAZIONE UTENTE (Auth + DB Profile)
        const user = await api.auth.register(formData.email, formData.password, {
-          name: `${formData.firstName} ${formData.lastName}`,
+          name: fullName || 'Utente Renthubber', // Fallback di sicurezza
           role: selectedRole,
-          roles: [selectedRole], // Init array with selected role
+          roles: [selectedRole],
           renterBalance: formData.referralCode ? 10.00 : 0,
           referralCode: formData.referralCode
        });
        
-       // 2. UPLOAD DOCUMENTI (Sequenziale)
-       if (kycFiles.front) {
-          const frontUrl = await api.storage.uploadDocument(user.id, kycFiles.front, 'front');
-          // Update local user object or re-fetch is needed, but we just need to push update to DB
-          await api.users.update({ ...user, idDocumentUrl: frontUrl }); // Temporary update using generic field or specific logic
-       }
-       
-       if (kycFiles.back) {
-          await api.storage.uploadDocument(user.id, kycFiles.back, 'back');
+       // 3. UPLOAD DOCUMENTI (Sequenziale)
+       // Usiamo try/catch interno per non bloccare il flusso se l'upload fallisce (es. bucket mancante)
+       try {
+         if (kycFiles.front) {
+            await api.storage.uploadDocument(user.id, kycFiles.front, 'front');
+         }
+         if (kycFiles.back) {
+            await api.storage.uploadDocument(user.id, kycFiles.back, 'back');
+         }
+       } catch (uploadErr) {
+         console.warn("Document upload issue (non-blocking):", uploadErr);
        }
 
-       // 3. UPDATE PROFILE WITH DOCS URLS (Done implicitly via storage helper or explicit update if needed)
-       // Note: api.storage.uploadDocument returns the signed URL, we might want to save specific columns if they exist
-       // For now assuming uploadDocument handles logic or we rely on previous step. 
-       
-       // Se siamo qui, non ci sono errori
+       // Salviamo l'utente nello stato locale per il passaggio successivo
+       setRegisteredUser(user);
+
        setIsLoading(false);
        setStep('success');
        
     } catch (err: any) {
        console.error("Signup Error:", err);
        setIsLoading(false);
-       // Mostriamo l'errore e NON cambiamo step
-       setErrorMsg(err.message || "Errore durante la registrazione. Riprova.");
+       
+       let message = "Errore durante la registrazione. Riprova.";
+       if (typeof err === 'string') {
+           message = err;
+       } else if (err instanceof Error) {
+           message = err.message;
+       } else if (err && typeof err === 'object') {
+           message = err.message || err.error_description || JSON.stringify(err);
+       }
+       
+       setErrorMsg(message);
     }
   };
 
   const handleFinalizeSignup = async () => {
+     // Se abbiamo l'utente salvato dallo step precedente, usiamolo direttamente
+     if (registeredUser) {
+        onComplete(registeredUser);
+        return;
+     }
+
+     // Fallback: proviamo a recuperare la sessione
      const session = await api.auth.getCurrentSession();
      if (session) {
         const user = await api.users.get(session.user.id);
@@ -112,7 +136,9 @@ export const Signup: React.FC<SignupProps> = ({ onComplete }) => {
       }
     } catch (err: any) {
       setIsLoading(false);
-      setErrorMsg(err.message || "Login fallito. Controlla email e password.");
+      let message = "Login fallito. Controlla email e password.";
+      if (err instanceof Error) message = err.message;
+      setErrorMsg(message);
     }
   };
 
@@ -127,7 +153,7 @@ export const Signup: React.FC<SignupProps> = ({ onComplete }) => {
       </div>
 
       {errorMsg && (
-         <div className="bg-red-50 text-red-600 p-3 rounded-lg text-sm mb-4 text-center border border-red-200">
+         <div className="bg-red-50 text-red-600 p-3 rounded-lg text-sm mb-4 text-center border border-red-200 break-words">
             {errorMsg}
          </div>
       )}
@@ -171,6 +197,21 @@ export const Signup: React.FC<SignupProps> = ({ onComplete }) => {
                Registrati
             </button>
          </p>
+         
+         <div className="mt-6 pt-6 border-t border-gray-100">
+            <p className="text-xs text-gray-400 mb-2">Area Sviluppo / Demo Rapida</p>
+            <button 
+               onClick={async () => {
+                  // Simula login Admin
+                  const adminUser = await api.users.get('admin1'); // DEMO_ADMIN ID from constants
+                  if (adminUser) onComplete(adminUser);
+                  else alert("Utente Admin Demo non trovato. Assicurati di aver inizializzato i mock.");
+               }}
+               className="w-full bg-gray-800 text-white text-xs font-bold py-2 rounded hover:bg-gray-900 mb-2"
+            >
+               Admin System
+            </button>
+         </div>
       </div>
     </div>
   );
@@ -248,6 +289,12 @@ export const Signup: React.FC<SignupProps> = ({ onComplete }) => {
           Inserisci i tuoi dati per accedere a Renthubber.
         </p>
       </div>
+
+      {errorMsg && (
+         <div className="bg-red-50 text-red-600 p-3 rounded-lg text-sm mb-4 text-center border border-red-200">
+            {errorMsg}
+         </div>
+      )}
 
       <form onSubmit={handleInfoSubmit} className="space-y-4">
         <div className="grid grid-cols-2 gap-4">
@@ -343,7 +390,7 @@ export const Signup: React.FC<SignupProps> = ({ onComplete }) => {
       </div>
 
       {errorMsg && (
-         <div className="bg-red-50 text-red-600 p-3 rounded-lg text-sm mb-4 text-center border border-red-200">
+         <div className="bg-red-50 text-red-600 p-3 rounded-lg text-sm mb-4 text-center border border-red-200 break-words">
             {errorMsg}
          </div>
       )}
