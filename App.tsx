@@ -113,7 +113,7 @@ const App: React.FC = () => {
     }
   };
 
-  // ⬇️ FUNZIONE MODIFICATA (con try/catch e log, senza rompere altro)
+  // ✅ gestisce sia il salvataggio via API sia il fallback locale
   const handleAddListing = async (newListing: Listing) => {
     try {
       console.log('DEBUG handleAddListing – ricevuto dal wizard:', newListing);
@@ -122,13 +122,15 @@ const App: React.FC = () => {
 
       console.log('DEBUG handleAddListing – salvato da api.listings.create:', saved);
 
-      // usa lo stato precedente per sicurezza
       setListings(prev => [saved, ...prev]);
-
       setCurrentView('my-listings');
     } catch (error) {
       console.error('Errore durante la creazione dell’annuncio:', error);
-      alert('Si è verificato un errore durante il salvataggio dell’annuncio. Riprova tra poco.');
+      
+      // Fallback: aggiunge comunque l’annuncio alla lista locale
+      setListings(prev => [newListing, ...prev]);
+      setCurrentView('my-listings');
+      alert('L’annuncio è stato creato solo in locale. Il salvataggio sul server non è riuscito.');
     }
   };
 
