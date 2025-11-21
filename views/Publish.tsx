@@ -20,7 +20,7 @@ import {
   Loader2
 } from 'lucide-react';
 import { generateListingDescription, suggestPrice } from '../services/geminiService';
-import { ListingDraft, ListingCategory, Condition, CancellationPolicyType, Listing, User } from '../types';
+import { ListingDraft, Condition, CancellationPolicyType, Listing, User } from '../types';
 
 // --- WIZARD STEPS CONSTANTS ---
 const STEPS = [
@@ -78,7 +78,6 @@ export const Publish: React.FC<PublishProps> = ({ onPublish, currentUser }) => {
   // --- COMPLETENESS CALCULATOR ---
   useEffect(() => {
     let score = 0;
-    // Weights
     if (draft.title.length > 5) score += 10;
     if (draft.description.length > 50) score += 15;
     if (draft.price) score += 10;
@@ -114,7 +113,11 @@ export const Publish: React.FC<PublishProps> = ({ onPublish, currentUser }) => {
         ? `Marca: ${draft.brand}, Modello: ${draft.model}, Condizioni: ${draft.condition}`
         : `Mq: ${draft.sqm}, Capienza: ${draft.capacity}`;
 
-    const descPromise = generateListingDescription(draft.title, `${draft.features}. ${context}`, draft.category);
+    const descPromise = generateListingDescription(
+      draft.title,
+      `${draft.features}. ${context}`,
+      draft.category
+    );
     const pricePromise = suggestPrice(draft.title, draft.category);
 
     const [descResult, priceResult] = await Promise.all([descPromise, pricePromise]);
@@ -159,25 +162,36 @@ export const Publish: React.FC<PublishProps> = ({ onPublish, currentUser }) => {
     fileInputRef.current?.click();
   };
 
-  // 🔥 NUOVA VERSIONE HANDLEPUBLISH (più robusta, senza blocchi silenziosi)
+  // --- PUBLISH LOGIC ---
   const handlePublish = async () => {
-    // Validazione minima con messaggi chiari
-    if (!draft.title || !draft.description || !draft.price || !draft.location) {
+    // Validazione campi base
+    const missingFields: string[] = [];
+    if (!draft.title) missingFields.push('Titolo');
+    if (!draft.description) missingFields.push('Descrizione');
+    if (!draft.price) missingFields.push('Prezzo');
+    if (!draft.location) missingFields.push('Città / Zona');
+    if (draft.images.length === 0) missingFields.push('Almeno una foto');
+
+    if (missingFields.length > 0) {
       alert(
-        'Per pubblicare devi inserire almeno:\n- Titolo\n- Descrizione\n- Prezzo\n- Città / Zona'
+        'Per pubblicare devi compilare:\n- ' +
+          missingFields.join('\n- ')
       );
       return;
     }
 
-    if (draft.images.length === 0) {
-      alert('Aggiungi almeno una foto prima di pubblicare il tuo annuncio.');
+    // Controllo qualità minima
+    if (completeness < 70) {
+      alert(
+        'Completa meglio il tuo annuncio (descrizione, foto, dettagli) fino ad almeno il 70% di qualità prima di pubblicare.'
+      );
       return;
     }
 
     setIsPublishing(true);
 
     try {
-      // Simuliamo un piccolo delay (come prima)
+      // piccolo delay per feedback utente
       await new Promise(resolve => setTimeout(resolve, 2000));
 
       const newListing: Listing = {
@@ -191,7 +205,7 @@ export const Publish: React.FC<PublishProps> = ({ onPublish, currentUser }) => {
         priceUnit: draft.priceUnit as 'ora' | 'giorno' | 'settimana' | 'mese',
         images: draft.images,
         location: draft.location,
-        coordinates: { lat: 45.4642, lng: 9.1900 }, // TODO: sostituire con coords reali quando avrete la mappa
+        coordinates: { lat: 45.4642, lng: 9.1900 }, // placeholder
         rating: 0,
         reviewCount: 0,
         reviews: [],
@@ -220,11 +234,11 @@ export const Publish: React.FC<PublishProps> = ({ onPublish, currentUser }) => {
       };
 
       console.log('DEBUG Publish – newListing:', newListing);
-      alert('Sto chiamando onPublish con il nuovo annuncio');
 
+      // chiama il callback fornito da App.tsx
       onPublish(newListing);
     } catch (error) {
-      console.error(error);
+      console.error('Errore durante handlePublish:', error);
       alert('Errore durante la pubblicazione. Riprova tra qualche istante.');
     } finally {
       setIsPublishing(false);
@@ -623,6 +637,7 @@ export const Publish: React.FC<PublishProps> = ({ onPublish, currentUser }) => {
     </div>
   );
 
+  // --- RENDER ROOT ---
   return (
     <div className="min-h-screen bg-gray-50 flex flex-col">
       <div className="bg-white border-b border-gray-200 sticky top-0 z-30">
