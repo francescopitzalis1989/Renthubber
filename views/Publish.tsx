@@ -112,20 +112,26 @@ export const Publish: React.FC<PublishProps> = ({ onPublish, currentUser }) => {
     setIsGenerating(false);
   };
 
+  // --- MEDIA UPLOAD (BASE64) ---
   const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files && e.target.files.length > 0) {
-      const newImages: string[] = [];
-      Array.from(e.target.files).forEach(file => {
-        // Fix: Cast file to Blob to resolve type error
-        const imageUrl = URL.createObjectURL(file as Blob);
-        newImages.push(imageUrl);
-      });
-      
-      setDraft(prev => ({
-        ...prev,
-        images: [...prev.images, ...newImages]
-      }));
-    }
+    if (!e.target.files || e.target.files.length === 0) return;
+
+    const files = Array.from(e.target.files);
+
+    files.forEach((file) => {
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        const base64 = reader.result as string; // data:image/...
+        setDraft(prev => ({
+          ...prev,
+          images: [...prev.images, base64],
+        }));
+      };
+      reader.readAsDataURL(file);
+    });
+
+    // reset input per poter ricaricare lo stesso file se serve
+    e.target.value = '';
   };
 
   const removeImage = (index: number) => {
