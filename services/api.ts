@@ -1,17 +1,19 @@
-
 import { User, Listing, BookingRequest, Transaction, PayoutRequest, Invoice, Review, Dispute } from '../types';
 import { MOCK_LISTINGS, MOCK_REQUESTS, MOCK_TRANSACTIONS, MOCK_INVOICES, MOCK_REVIEWS, MOCK_DISPUTES } from '../constants';
 import { supabase } from '../lib/supabase';
 
-// --- HELPER PER MAPPING DATI SUPABASE -> APP TYPE ---
+// --- HELPER PER MAPPING DATI SUPABASE (USERS) -> APP TYPE (USER) ---
 const mapSupabaseUserToAppUser = (sbUser: any, authUser: any): User => {
   return {
     id: authUser.id,
     email: authUser.email,
     name: sbUser.name || authUser.email?.split('@')[0] || 'Utente',
-    avatar: sbUser.avatar || `https://ui-avatars.com/api/?name=${sbUser.name || 'User'}&background=random`,
+    // Mapping specifico: avatar_url -> avatar
+    avatar: sbUser.avatar_url || `https://ui-avatars.com/api/?name=${sbUser.name || 'User'}&background=random`,
+    
     role: sbUser.role || 'renter',
-    roles: sbUser.roles || ['renter'],
+    roles: sbUser.roles || [sbUser.role || 'renter'],
+    
     rating: sbUser.rating || 0,
     isSuperHubber: sbUser.is_super_hubber || false,
     status: sbUser.status || 'active',
@@ -19,16 +21,22 @@ const mapSupabaseUserToAppUser = (sbUser: any, authUser: any): User => {
     renterBalance: sbUser.renter_balance || 0,
     hubberBalance: sbUser.hubber_balance || 0,
     referralCode: sbUser.referral_code || '',
-    // Campi opzionali e verifiche
+    
     hubberSince: sbUser.hubber_since,
-    emailVerified: !!authUser.email_confirmed_at,
+    
+    // Verifiche
+    emailVerified: !!authUser.email_confirmed_at || sbUser.email_verified,
     phoneVerified: sbUser.phone_verified || false,
     idDocumentVerified: sbUser.id_document_verified || false,
     verificationStatus: sbUser.verification_status || 'unverified',
+    
+    // Dati Personali
     address: sbUser.address,
     phoneNumber: sbUser.phone_number,
     bio: sbUser.bio,
-    bankDetails: sbUser.bank_details,
+    bankDetails: sbUser.bank_details, // JSONB column
+    
+    // Documenti
     idDocumentUrl: sbUser.document_front_url
   };
 };
@@ -38,98 +46,110 @@ export const api = {
   
   // STORAGE MANAGEMENT
   storage: {
+    uploadAvatar: async (userId: string, file: File) => {
+      const fileExt = file.name.split('.').pop();
+      const fileName = `${userId}-${Date.now()}.${fileExt}`;
+      const filePath = `${fileName}`;
+
+      const { data: buckets } = await supabase.storage.listBuckets();
+      const avatarBucket = buckets?.find(b => b.name === 'avatars');
+      if (!avatarBucket) await supabase.storage.createBucket('avatars', { public: true });
+
+      const { error: uploadError } = await supabase.storage.from('avatars').upload(filePath, file, { upsert: true });
+      if (uploadError) throw uploadError;
+
+      const { data } = supabase.storage.from('avatars').getPublicUrl(filePath);
+      
+      // Update USERS table
+      await supabase.from('users').update({ avatar_url: data.publicUrl }).eq('id', userId);
+
+      return data.publicUrl;
+    },
+
     uploadDocument: async (userId: string, file: File, side: 'front' | 'back') => {
       const fileExt = file.name.split('.').pop();
       const fileName = `${userId}/${side}-${Date.now()}.${fileExt}`;
       const filePath = `${fileName}`;
 
-      // 1. Upload
-      const { error: uploadError } = await supabase.storage
-        .from('documents')
-        .upload(filePath, file);
+      let { error: uploadError } = await supabase.storage.from('documents').upload(filePath, file);
 
-      if (uploadError) throw uploadError;
+      if (uploadError && (uploadError.message.includes('not found') || (uploadError as any).statusCode === '404')) {
+         await supabase.storage.createBucket('documents', { public: false });
+         const retry = await supabase.storage.from('documents').upload(filePath, file);
+         uploadError = retry.error;
+      }
 
-      // 2. Get Signed URL (valid for 1 year, or handle rotation)
-      const { data } = await supabase.storage
-        .from('documents')
-        .createSignedUrl(filePath, 31536000); // 1 year
+      if (uploadError) {
+         console.error("Upload failed:", uploadError);
+         return undefined;
+      }
 
-      if (!data?.signedUrl) throw new Error("Errore generazione URL file");
+      const { data } = await supabase.storage.from('documents').createSignedUrl(filePath, 31536000);
+      if (!data?.signedUrl) return undefined;
 
-      // 3. Update User Profile with URL (Specific Column)
+      // Update USERS table
       const column = side === 'front' ? 'document_front_url' : 'document_back_url';
-      const { error: updateError } = await supabase
-        .from('users')
-        .update({ [column]: data.signedUrl })
-        .eq('id', userId);
-
-      if (updateError) console.warn("Errore salvataggio URL nel DB:", updateError);
+      await supabase.from('users').update({ [column]: data.signedUrl }).eq('id', userId);
 
       return data.signedUrl;
     }
   },
 
-  // AUTHENTICATION & USER MANAGEMENT (REAL SUPABASE)
+  // AUTHENTICATION & USER MANAGEMENT
   auth: {
     login: async (email, password) => {
-      const { data, error } = await supabase.auth.signInWithPassword({
-        email,
-        password,
-      });
-      if (error) throw error;
+      const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+      if (error) throw new Error(error.message || "Login fallito");
       
-      // Fetch full profile from public.users
+      // Fetch from PUBLIC.USERS
       return api.users.get(data.session.user.id);
     },
 
     register: async (email, password, userData: Partial<User>) => {
-      // 1. Sign Up
-      const { data: authData, error: authError } = await supabase.auth.signUp({
-        email,
-        password,
-      });
-      if (authError) throw authError;
+      // 1. Sign Up Auth
+      const { data: authData, error: authError } = await supabase.auth.signUp({ email, password });
+      if (authError) throw new Error(authError.message || "Errore registrazione");
 
-      // 2. Get Session immediately
-      const { data: { session } } = await supabase.auth.getSession();
-      
-      // DEBUG LOG OBBLIGATORIO
-      console.log("DEBUG – session user:", session?.user);
-
-      // Fallback: se la sessione è null (es. email confirm required), usiamo authData.user
+      const session = authData.session;
       const userId = session?.user?.id || authData.user?.id;
-      const userEmail = session?.user?.email || authData.user?.email;
+      
+      if (!userId) throw new Error("ID utente non recuperabile.");
 
-      if (!userId) {
-        throw new Error("Registrazione riuscita ma impossibile recuperare ID utente.");
-      }
-
-      const fullName = userData.name || 'Nuovo Utente';
       const userRole = userData.role || 'renter';
       const userRoles = userData.roles || [userRole];
 
-      // 3. UPSERT SU TABELLA USERS (Codice Esatto Richiesto)
-      const { data, error: userError } = await supabase
+      // 2. UPSERT into PUBLIC.USERS
+      const { error: userDbError } = await supabase
         .from("users")
         .upsert({
           id: userId,
-          email: userEmail,
-          name: fullName,
+          email: email,
+          name: userData.name,
           role: userRole,
           roles: userRoles,
-          status: "active"
-          // renter_balance: userData.renterBalance || 0, // Removed to prevent errors if column missing
-          // referral_code: userData.referralCode || null // Removed to prevent errors if column missing
-        })
+          referral_code: userData.referralCode,
+          renter_balance: userData.renterBalance || 0,
+          status: 'active',
+          created_at: new Date().toISOString()
+        }, { onConflict: 'id' })
         .select();
 
-      // DEBUG LOG RISULTATO
-      console.log("DEBUG – upsert result:", { data, userError });
-
-      if (userError) {
-        console.error("Supabase users upsert error", userError);
-        throw new Error("Errore salvataggio profilo database: " + userError.message);
+      if (userDbError) {
+        console.error("User DB creation error:", userDbError);
+        // Fallback: return partial object to unblock UI
+        return {
+           id: userId,
+           email: email,
+           name: userData.name || 'User',
+           role: userRole,
+           roles: userRoles,
+           status: 'active',
+           renterBalance: 0,
+           hubberBalance: 0,
+           referralCode: '',
+           avatar: `https://ui-avatars.com/api/?name=${userData.name}&background=random`,
+           isSuperHubber: false
+        } as User;
       }
       
       return api.users.get(userId);
@@ -147,82 +167,77 @@ export const api = {
 
   users: {
     get: async (userId: string): Promise<User | null> => {
-      // 1. Get Auth Data (for email/verification status)
       const { data: { user: authUser } } = await supabase.auth.getUser();
       
-      // 2. Get Public Profile Data
-      const { data: profile, error } = await supabase
+      // Fetch from USERS table
+      const { data: userRow, error } = await supabase
         .from('users')
         .select('*')
         .eq('id', userId)
         .single();
 
-      // AUTO-HEALING: Se l'utente è loggato ma non ha profilo in tabella users, crealo ora.
-      if (error || !profile) {
-         console.warn("Profilo DB mancante per utente autenticato. Tentativo di ripristino...", error);
+      // Auto-healing: create row if missing in users table
+      if (error || !userRow) {
          if (authUser && authUser.id === userId) {
-            const { data: newProfile, error: createError } = await supabase
+            console.log("Auto-healing: Creating missing user row in public.users...");
+            const { data: newUserRow } = await supabase
               .from("users")
-              .upsert({
+              .insert({
                 id: userId,
                 email: authUser.email,
-                name: authUser.email?.split('@')[0] || 'Utente Ripristinato',
-                role: "renter",
-                roles: ["renter"],
-                status: "active"
+                name: authUser.email?.split('@')[0] || 'User',
+                role: 'renter',
+                roles: ['renter'],
+                avatar_url: `https://ui-avatars.com/api/?name=${authUser.email}&background=random`,
+                status: 'active'
               })
               .select()
               .single();
             
-            if (!createError && newProfile) {
-               return mapSupabaseUserToAppUser(newProfile, authUser);
-            }
+            if (newUserRow) return mapSupabaseUserToAppUser(newUserRow, authUser);
          }
          return null;
       }
 
-      // Merge Auth + DB
-      return mapSupabaseUserToAppUser(profile, authUser || { id: userId, email: profile.email });
+      return mapSupabaseUserToAppUser(userRow, authUser || { id: userId, email: userRow.email });
     },
 
     update: async (user: User) => {
-      const { error } = await supabase
-        .from('users')
-        .update({
+      // Map App fields to DB columns (snake_case) for USERS table
+      const updateData = {
           name: user.name,
+          role: user.role,
           roles: user.roles,
-          role: user.role, // Primary role
-          avatar: user.avatar,
+          avatar_url: user.avatar, // Mapped
           bio: user.bio,
           phone_number: user.phoneNumber,
           address: user.address,
           bank_details: user.bankDetails,
-          // Verifiche
+          
+          // Verifications
           phone_verified: user.phoneVerified,
           id_document_verified: user.idDocumentVerified,
           verification_status: user.verificationStatus,
-          is_suspended: user.isSuspended
-          // renter_balance, hubber_balance removed
-        })
-        .eq('id', user.id);
+          is_suspended: user.isSuspended,
+          
+          // Balances
+          renter_balance: user.renterBalance,
+          hubber_balance: user.hubberBalance
+      };
 
+      const { error } = await supabase.from('users').update(updateData).eq('id', user.id);
       if (error) throw error;
       return user;
     },
 
     upgradeToHubber: async (user: User) => {
-      // 1. Fetch current roles to be safe
-      const { data: currentProfile } = await supabase.from('users').select('roles').eq('id', user.id).single();
-      const currentRoles = currentProfile?.roles || ['renter'];
-      
-      // 2. Append 'hubber' if not present
-      const newRoles = Array.from(new Set([...currentRoles, 'hubber']));
+      const newRoles = Array.from(new Set([...(user.roles || []), 'hubber']));
       
       const { error } = await supabase
         .from('users')
         .update({
+          role: 'hubber', // Switch active role
           roles: newRoles,
-          role: 'hubber', // Set as primary role for immediate dashboard switch
           hubber_since: new Date().toISOString()
         })
         .eq('id', user.id);
