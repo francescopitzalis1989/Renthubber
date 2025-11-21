@@ -1,4 +1,6 @@
+// TYPES - RENTHUBBER APP (VERSIONE COMPLETA 2025)
 
+// CATEGORIE E STATI
 export type ListingCategory = 'oggetto' | 'spazio';
 export type ListingStatus = 'draft' | 'published' | 'hidden' | 'suspended';
 export type Condition = 'nuovo' | 'come_nuovo' | 'buono' | 'usato' | 'molto_usato';
@@ -7,10 +9,10 @@ export type ActiveMode = 'renter' | 'hubber';
 
 // --- SYSTEM CONFIGURATION ---
 export interface FeeConfig {
-  platformPercentage: number; // Percentuale Base (Fallback)
-  renterPercentage: number;   // Nuova: % specifica Renter
-  hubberPercentage: number;   // Nuova: % specifica Hubber
-  superHubberPercentage: number; // Nuova: % specifica SuperHubber
+  platformPercentage: number;
+  renterPercentage: number;
+  hubberPercentage: number;
+  superHubberPercentage: number;
   fixedFeeEur: number;
 }
 
@@ -28,16 +30,14 @@ export interface PolicyRule {
   color: string;
 }
 
-// SUPERHUBBER CONFIG
 export interface SuperHubberConfig {
-  minRating: number;          // Es. 4.7
-  minResponseRate: number;    // Es. 90%
-  maxCancellationRate: number;// Es. 1.0%
-  minHostingDays: number;     // Es. 90 giorni
-  requiredCriteriaCount: number; // Es. 3 (su 4)
+  minRating: number;
+  minResponseRate: number;
+  maxCancellationRate: number;
+  minHostingDays: number;
+  requiredCriteriaCount: number;
 }
 
-// CMS & BRANDING
 export interface PageContent {
   id: string;
   slug: string;
@@ -65,7 +65,7 @@ export interface SystemConfig {
   referral: ReferralConfig;
   cancellationPolicies: PolicyRule[];
   completenessThreshold: number;
-  superHubber: SuperHubberConfig; // Updated from simple number to object
+  superHubber: SuperHubberConfig;
   cms: CmsConfig;
 }
 
@@ -86,13 +86,13 @@ export interface User {
   email?: string;
   avatar: string;
   rating: number;
-  reviewCount?: number; 
+  reviewCount?: number;
   isSuperHubber: boolean;
   role?: 'renter' | 'hubber' | 'admin';
   roles: string[];
   hubberSince?: string;
   status?: 'active' | 'suspended' | 'pending_verification';
-  isSuspended?: boolean; // Explicit suspension flag
+  isSuspended?: boolean;
   customCommissionRate?: number;
   address?: string;
   phoneNumber?: string;
@@ -100,21 +100,18 @@ export interface User {
   hubberBalance: number;
   referralCode: string;
   bankDetails?: BankDetails;
-  
-  // PROFILE FIELDS
+
   bio?: string;
   languages?: string[];
   responseTime?: string;
-  responseRate?: number; // 0-100
-  
-  // LEGACY VERIFICATIONS (Keep for backward compatibility if needed, but sync with new ones)
+  responseRate?: number;
+
   verifications?: {
     email: boolean;
     phone: boolean;
     identity: boolean;
   };
 
-  // NEW VERIFICATION SYSTEM
   emailVerified?: boolean;
   phoneVerified?: boolean;
   idDocumentVerified?: boolean;
@@ -122,19 +119,21 @@ export interface User {
   idDocumentUrl?: string;
 }
 
+// --- RECENSIONI ---
 export interface Review {
   id: string;
-  authorId: string; // Chi scrive
-  targetId: string; // Chi riceve (User ID o Listing ID in base al contesto)
+  authorId: string;
+  targetId: string;
   bookingId: string;
-  userName: string; // Nome autore per display rapido
+  userName: string;
   rating: number;
   comment: string;
   date: string;
-  status: 'published' | 'pending' | 'hidden'; // Blind review status
+  status: 'published' | 'pending' | 'hidden';
   type: 'renter_to_hubber' | 'hubber_to_renter';
 }
 
+// --- SPECIFICHE OGGETTI / SPAZI ---
 export interface TechSpecs {
   brand?: string;
   model?: string;
@@ -155,9 +154,10 @@ export interface SpaceSpecs {
   layoutTypes?: string[];
 }
 
-// --- LISTING MODEL EXPANDED ---
+// --- LISTING MODEL COMPLETO ---
 export interface Listing {
   id: string;
+  hostId: string;                  // 🔥 NECESSARIO per assegnare l’annuncio
   title: string;
   category: ListingCategory;
   subCategory: string;
@@ -170,7 +170,7 @@ export interface Listing {
   rating: number;
   reviewCount: number;
   reviews: Review[];
-  owner: User;
+  owner?: User;                    // 🔥 RESO OPZIONALE per compatibilità
   features: string[];
   rules: string[];
   deposit?: number;
@@ -183,14 +183,16 @@ export interface Listing {
   completenessScore?: number;
   privateAddress?: string;
 
-  // NEW FIELDS FOR FULL EDITOR
-  zoneDescription?: string;      
-  openingHours?: string;         
-  maxGuests?: number;            
-  manualBadges?: string[];       
-  hostRules?: string[];          
+  zoneDescription?: string;
+  openingHours?: string;
+  maxGuests?: number;
+  manualBadges?: string[];
+  hostRules?: string[];
+
+  createdAt?: string;              // 🔥 AGGIUNTO per ordinamento e compatibilità
 }
 
+// --- TRANSAZIONI ---
 export interface Transaction {
   id: string;
   date: string;
@@ -200,6 +202,7 @@ export interface Transaction {
   walletType?: 'renter' | 'hubber';
 }
 
+// --- PAGAMENTI HUBBER ---
 export interface PayoutRequest {
   id: string;
   userId: string;
@@ -210,6 +213,7 @@ export interface PayoutRequest {
   date: string;
 }
 
+// --- MESSAGGI ---
 export interface Message {
   id: string;
   senderId: string;
@@ -229,6 +233,7 @@ export interface ChatContact {
   isSupport?: boolean;
 }
 
+// --- BOZZA ANNUNCIO ---
 export interface ListingDraft {
   step: number;
   category: ListingCategory;
@@ -249,37 +254,39 @@ export interface ListingDraft {
   images: string[];
 }
 
+// --- BOOKING REQUEST ---
 export interface BookingRequest {
   id: string;
   listingTitle: string;
   listingImage: string;
   renterName: string;
   renterAvatar: string;
-  renterId?: string; // Added for linking
-  hostId?: string;   // Added for linking
+  renterId?: string;
+  hostId?: string;
   dates: string;
-  totalPrice: number; // Totale pagato dal renter
-  commission?: number; // Fee trattenuta dalla piattaforma
-  netEarnings?: number; // Netto all'hubber
+  totalPrice: number;
+  commission?: number;
+  netEarnings?: number;
   status: 'pending' | 'accepted' | 'rejected' | 'completed';
   timeLeft: string;
   renterHasReviewed?: boolean;
   hubberHasReviewed?: boolean;
 }
 
-// NEW: INVOICE MODEL
+// --- FATTURE ---
 export interface Invoice {
   id: string;
-  number: string; // e.g. INV-2023-001
+  number: string;
   hubberId: string;
   hubberName: string;
-  period: string; // e.g. "Ottobre 2023"
+  period: string;
   date: string;
-  amount: number; // Total fees collected
-  status: 'paid' | 'pending'; // Paid = trattenuto alla fonte
+  amount: number;
+  status: 'paid' | 'pending';
   downloadUrl: string;
 }
 
+// --- STATISTICHE ---
 export interface DashboardStats {
   earningsMonth: number;
   activeBookings: number;
@@ -287,6 +294,7 @@ export interface DashboardStats {
   responseRate: number;
 }
 
+// --- AUDIT LOG ---
 export interface AuditLog {
   id: string;
   adminName: string;
@@ -296,6 +304,7 @@ export interface AuditLog {
   details: string;
 }
 
+// --- DISPUTE ---
 export interface Dispute {
   id: string;
   reporterName: string;
@@ -308,6 +317,7 @@ export interface Dispute {
   resolutionNote?: string;
 }
 
+// --- REPORT ---
 export interface Report {
   id: string;
   type: 'listing' | 'user' | 'review';
