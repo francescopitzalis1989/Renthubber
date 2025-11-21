@@ -113,10 +113,23 @@ const App: React.FC = () => {
     }
   };
 
+  // ⬇️ FUNZIONE MODIFICATA (con try/catch e log, senza rompere altro)
   const handleAddListing = async (newListing: Listing) => {
-    const saved = await api.listings.create(newListing);
-    setListings([saved, ...listings]);
-    setCurrentView('my-listings');
+    try {
+      console.log('DEBUG handleAddListing – ricevuto dal wizard:', newListing);
+
+      const saved = await api.listings.create(newListing);
+
+      console.log('DEBUG handleAddListing – salvato da api.listings.create:', saved);
+
+      // usa lo stato precedente per sicurezza
+      setListings(prev => [saved, ...prev]);
+
+      setCurrentView('my-listings');
+    } catch (error) {
+      console.error('Errore durante la creazione dell’annuncio:', error);
+      alert('Si è verificato un errore durante il salvataggio dell’annuncio. Riprova tra poco.');
+    }
   };
 
   const handleUpdateListing = async (updatedListing: Listing) => {
