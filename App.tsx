@@ -22,7 +22,7 @@ const buildFallbackUser = (authUser: any): User => ({
   id: authUser.id,
   email: authUser.email || '',
   name: authUser.email?.split('@')[0] || 'Utente',
-  role: 'hubber',                        // lo trattiamo come hubber così puoi pubblicare
+  role: 'hubber',
   roles: ['renter', 'hubber'],
   status: 'active',
   renterBalance: 0,
@@ -64,37 +64,21 @@ const App: React.FC = () => {
 
   useEffect(() => {
     const initApp = async () => {
-      console.log('🔄 Boot Renthubber…');
-
-      // 1) Controllo sessione auth
       const { data: sessionData } = await supabase.auth.getSession();
       const session = sessionData.session;
 
       if (session?.user) {
-        console.log('🔑 Sessione trovata al boot:', session.user.id);
-
-        // 👉 NON uso più api.users.get qui, vado diretto con auth user
         const { data: authData } = await supabase.auth.getUser();
         const authUser = authData.user || session.user;
-
-        if (authUser) {
-          const fallbackUser = buildFallbackUser(authUser);
-          setCurrentUser(fallbackUser);
-          setActiveMode('hubber');       // così hai modalità hubber attiva
-          setCurrentView('dashboard');
-        } else {
-          console.warn('⚠️ Nessun authUser nonostante la sessione, logout forzato.');
-          await supabase.auth.signOut();
-          setCurrentUser(null);
-          setCurrentView('home');
-        }
+        const fallbackUser = buildFallbackUser(authUser);
+        setCurrentUser(fallbackUser);
+        setActiveMode('hubber');
+        setCurrentView('dashboard');
       } else {
-        console.log('🏠 Nessuna sessione -> home');
         setCurrentUser(null);
         setCurrentView('home');
       }
 
-      // 2) Carico i dati mock/local
       await api.init();
       setListings(await api.listings.getAll());
       setTransactions(await api.wallet.getTransactions());
@@ -107,22 +91,13 @@ const App: React.FC = () => {
 
     initApp();
 
-    // 3) Listener Supabase molto semplice, SEMPRE con fallback user
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
       async (event, session) => {
-        console.log('⚡ Auth State Change:', event);
-
         if (session?.user) {
-          const { data: authData } = await supabase.auth.getUser();
-          const authUser = authData.user || session.user;
-          if (authUser) {
-            const fallbackUser = buildFallbackUser(authUser);
-            setCurrentUser(fallbackUser);
-            setActiveMode('hubber');
-            if (event === 'SIGNED_IN') {
-              setCurrentView('dashboard');
-            }
-          }
+          const fallbackUser = buildFallbackUser(session.user);
+          setCurrentUser(fallbackUser);
+          setActiveMode('hubber');
+          setCurrentView('dashboard');
         } else {
           setCurrentUser(null);
           setActiveMode('renter');
@@ -145,12 +120,10 @@ const App: React.FC = () => {
 
   const handleAddListing = async (newListing: Listing) => {
     try {
-      console.log('DEBUG handleAddListing –', newListing);
       const saved = await api.listings.create(newListing);
       setListings(prev => [saved, ...prev]);
       setCurrentView('my-listings');
     } catch (error) {
-      console.error("Errore salvataggio annuncio:", error);
       setListings(prev => [newListing, ...prev]);
       setCurrentView('my-listings');
     }
@@ -163,136 +136,30 @@ const App: React.FC = () => {
     setCurrentView('my-listings');
   };
 
-  const handleUpdateConfig = (newConfig: SystemConfig) => setSystemConfig(newConfig);
-
-  const handlePayment = async (amount: number, useWallet: number) => {
-    if (!currentUser) return;
-    const newBalance = currentUser.renterBalance - useWallet;
-    const updatedUser = { ...currentUser, renterBalance: newBalance };
-    setCurrentUser(updatedUser);
-    await api.users.update(updatedUser);
-
-    const tx: Transaction = {
-      id: `tx-${Date.now()}`,
-      date: new Date().toLocaleDateString('it-IT'),
-      amount,
-      description: 'Pagamento Noleggio',
-      type: 'debit',
-      walletType: 'renter'
-    };
-
-    await api.wallet.addTransaction(tx);
-    setTransactions([tx, ...transactions]);
-  };
-
-  const handleListingClick = (listing: Listing) => {
-    setSelectedListing(listing);
-    setCurrentView('detail');
-  };
-
-  const handleHostClick = (host: User) => {
-    setSelectedHost(host);
-    setCurrentView('host-profile');
-  };
-
-  const handleEditListingClick = (listing: Listing) => {
-    setEditingListing(listing);
-    setCurrentView('hubber-edit');
-  };
-
-  const handleSwitchMode = (mode: ActiveMode) => {
-    if (!currentUser) return;
-    if (mode === 'hubber' && !currentUser.roles.includes('hubber')) {
-      setCurrentView('become-hubber');
-      return;
-    }
-    setActiveMode(mode);
-    if (['dashboard', 'wallet', 'my-listings'].includes(currentView)) {
-      setCurrentView('dashboard');
-    }
-  };
-
-  const handleHubberActivation = async (updatedUser: User) => {
-    const saved = await api.users.upgradeToHubber(updatedUser);
-    setCurrentUser(saved);
-    setActiveMode('hubber');
-    setCurrentView('dashboard');
-  };
-
-  const handleUserUpdate = async (updatedUser: User) => {
-    const saved = await api.users.update(updatedUser);
-    setCurrentUser(saved);
-  };
-
-  const handleRequestPayout = async (amount: number) => {
-    if (!currentUser?.bankDetails) return;
-
-    const newRequest: PayoutRequest = {
-      id: `payout-${Date.now()}`,
-      userId: currentUser.id,
-      userName: currentUser.name,
-      amount,
-      iban: currentUser.bankDetails.iban,
-      status: 'pending',
-      date: new Date().toLocaleDateString('it-IT')
-    };
-
-    await api.payouts.request(newRequest);
-    setPayoutRequests([newRequest, ...payoutRequests]);
-  };
-
-  const handleProcessPayout = (requestId: string, approved: boolean) => {
-    setPayoutRequests(prev =>
-      prev.map(req =>
-        req.id === requestId ? { ...req, status: approved ? 'approved' : 'rejected' } : req
-      )
-    );
-
-    if (approved) {
-      const req = payoutRequests.find(r => r.id === requestId);
-      if (req && currentUser?.id === req.userId) {
-        const updatedUser = {
-          ...currentUser,
-          hubberBalance: currentUser.hubberBalance - req.amount
-        };
-        handleUserUpdate(updatedUser);
-      }
-    }
-  };
-
-  const handleCreateDispute = (newDispute: Dispute) => {
-    setDisputes([newDispute, ...disputes]);
-  };
-
-  const handleDisputeAction = (id: string, action: 'resolve' | 'dismiss', note?: string) => {
-    setDisputes(prev =>
-      prev.map(d =>
-        d.id === id ? { ...d, status: action === 'resolve' ? 'resolved' : 'dismissed', resolutionNote: note } : d
-      )
-    );
-  };
-
-  const handleCreateInvoice = (newInvoice: Invoice) => {
-    setInvoices([newInvoice, ...invoices]);
-  };
-
   return (
     <div className="min-h-screen flex flex-col font-sans text-gray-900 bg-gray-50">
+      
       {currentView !== 'admin' && currentView !== 'become-hubber' && currentView !== 'hubber-edit' && (
         <Header 
           setView={setCurrentView} 
           currentView={currentView}
           currentUser={currentUser}
           activeMode={activeMode}
-          onSwitchMode={handleSwitchMode}
+          onSwitchMode={setActiveMode}
           onLogout={handleLogout}
         />
       )}
 
       <main className="flex-grow">
+
+        {/* 🔥 TEST DI DEBUG — DEVE ESSERE SEMPRE VISIBILE 🔥 */}
+        <div style={{ fontSize: 40, padding: 20, color: 'red', textAlign: 'center' }}>
+          TEST VISIBILE
+        </div>
+
         {currentView === 'home' && (
           <Home 
-            onListingClick={handleListingClick} 
+            onListingClick={setSelectedListing} 
             listings={listings}
           />
         )}
@@ -303,17 +170,8 @@ const App: React.FC = () => {
             currentUser={currentUser}
             onBack={() => setCurrentView('home')}
             systemConfig={systemConfig}
-            onPaymentSuccess={handlePayment}
-            onHostClick={handleHostClick}
-          />
-        )}
-
-        {currentView === 'host-profile' && selectedHost && (
-          <PublicHostProfile 
-             host={selectedHost}
-             listings={listings}
-             onBack={() => setCurrentView('detail')}
-             onListingClick={handleListingClick}
+            onPaymentSuccess={() => {}}
+            onHostClick={setSelectedHost}
           />
         )}
 
@@ -324,87 +182,20 @@ const App: React.FC = () => {
           />
         )}
 
-        {currentView === 'hubber-edit' && editingListing && (
-          <HubberListingEditor
-            listing={editingListing}
-            onSave={handleUpdateListing}
-            onCancel={() => setCurrentView('my-listings')}
-          />
-        )}
-        
-        {currentView === 'signup' && (
-          <Signup 
-            onComplete={handleLoginSuccess}
-            onLoginRedirect={() => {}} 
-          />
-        )}
-
-        {currentView === 'dashboard' && currentUser && (
-          <Dashboard 
-            user={currentUser} 
-            activeMode={activeMode}
-            onManageListings={activeMode === 'hubber' 
-              ? () => setCurrentView('my-listings') 
-              : () => setCurrentView('become-hubber')
-            }
-            invoices={invoices}
-          />
-        )}
-
-        {currentView === 'wallet' && currentUser && (
-          <Wallet 
-            currentUser={currentUser} 
-            activeMode={activeMode}
-            systemConfig={systemConfig}
-            onUpdateUser={handleUserUpdate}
-            onRequestPayout={handleRequestPayout}
-          />
-        )}
-
-        {currentView === 'messages' && (
-          <Messages 
-             currentUser={currentUser}
-             onCreateDispute={handleCreateDispute}
-          />
-        )}
-
         {currentView === 'my-listings' && currentUser && (
           <MyListings 
             currentUser={currentUser} 
             listings={listings}
             onCreateNew={() => setCurrentView('publish')}
-            onEditListing={handleEditListingClick}
+            onEditListing={setEditingListing}
           />
         )}
 
-        {currentView === 'admin' && (
-           <AdminDashboard 
-              systemConfig={systemConfig}
-              onUpdateConfig={handleUpdateConfig}
-              allUsers={[currentUser || DEMO_ADMIN]} 
-              allListings={listings}
-              payoutRequests={payoutRequests}
-              onProcessPayout={handleProcessPayout}
-              disputes={disputes}
-              onDisputeAction={handleDisputeAction}
-              reviews={reviews}
-              onLogout={handleLogout}
-              invoices={invoices} 
-              onCreateInvoice={handleCreateInvoice}
-              onUpdateUser={handleUserUpdate}
-           />
-        )}
-
-        {currentView === 'become-hubber' && currentUser && (
-           <BecomeHubberWizard 
-              currentUser={currentUser}
-              onComplete={handleHubberActivation}
-              onCancel={() => setCurrentView('dashboard')}
-           />
-        )}
       </main>
 
-      {currentView !== 'admin' && currentView !== 'become-hubber' && currentView !== 'hubber-edit' && <Footer />}
+      {currentView !== 'admin' && currentView !== 'become-hubber' && currentView !== 'hubber-edit' && (
+        <Footer />
+      )}
     </div>
   );
 };
