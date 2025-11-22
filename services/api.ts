@@ -1,5 +1,11 @@
-import { User, Listing, BookingRequest, Transaction, PayoutRequest, Invoice, Review, Dispute } from '../types';
-import { MOCK_LISTINGS, MOCK_REQUESTS, MOCK_TRANSACTIONS, MOCK_INVOICES, MOCK_REVIEWS, MOCK_DISPUTES } from '../constants';
+import { 
+  User, Listing, BookingRequest, Transaction, 
+  PayoutRequest, Invoice, Review, Dispute 
+} from '../types';
+import { 
+  MOCK_LISTINGS, MOCK_REQUESTS, MOCK_TRANSACTIONS, 
+  MOCK_INVOICES, MOCK_REVIEWS, MOCK_DISPUTES 
+} from '../constants';
 import { supabase } from '../lib/supabase';
 
 // --- HELPER PER MAPPING DATI SUPABASE (USERS) -> APP TYPE (USER) ---
@@ -43,7 +49,9 @@ const mapSupabaseUserToAppUser = (sbUser: any, authUser: any): User => {
 // --- API SERVICE ---
 export const api = {
 
+  // ======================================================  
   // STORAGE MANAGEMENT
+  // ======================================================  
   storage: {
     uploadAvatar: async (userId: string, file: File) => {
       const fileExt = file.name.split('.').pop();
@@ -52,14 +60,23 @@ export const api = {
 
       const { data: buckets } = await supabase.storage.listBuckets();
       const avatarBucket = buckets?.find(b => b.name === 'avatars');
-      if (!avatarBucket) await supabase.storage.createBucket('avatars', { public: true });
+      if (!avatarBucket) {
+        await supabase.storage.createBucket('avatars', { public: true });
+      }
 
-      const { error: uploadError } = await supabase.storage.from('avatars').upload(filePath, file, { upsert: true });
+      const { error: uploadError } = await supabase
+        .storage
+        .from('avatars')
+        .upload(filePath, file, { upsert: true });
+
       if (uploadError) throw uploadError;
 
       const { data } = supabase.storage.from('avatars').getPublicUrl(filePath);
 
-      await supabase.from('users').update({ avatar_url: data.publicUrl }).eq('id', userId);
+      await supabase
+        .from('users')
+        .update({ avatar_url: data.publicUrl })
+        .eq('id', userId);
 
       return data.publicUrl;
     },
@@ -69,55 +86,78 @@ export const api = {
       const fileName = `${userId}/${side}-${Date.now()}.${fileExt}`;
       const filePath = `${fileName}`;
 
-      let { error: uploadError } = await supabase.storage.from('documents').upload(filePath, file);
+      let { error: uploadError } = await supabase
+        .storage
+        .from('documents')
+        .upload(filePath, file);
 
-      if (uploadError && (uploadError.message.includes('not found') || (uploadError as any).statusCode === '404')) {
+      if (uploadError && (
+        uploadError.message.includes('not found') || 
+        (uploadError as any).statusCode === '404'
+      )) {
         await supabase.storage.createBucket('documents', { public: false });
         const retry = await supabase.storage.from('documents').upload(filePath, file);
         uploadError = retry.error;
       }
 
       if (uploadError) {
-        console.error("Upload failed:", uploadError);
+        console.error('Upload failed:', uploadError);
         return undefined;
       }
 
-      const { data } = await supabase.storage.from('documents').createSignedUrl(filePath, 31536000);
+      const { data } = await supabase
+        .storage
+        .from('documents')
+        .createSignedUrl(filePath, 31536000);
+
       if (!data?.signedUrl) return undefined;
 
       const column = side === 'front' ? 'document_front_url' : 'document_back_url';
-      await supabase.from('users').update({ [column]: data.signedUrl }).eq('id', userId);
+
+      await supabase
+        .from('users')
+        .update({ [column]: data.signedUrl })
+        .eq('id', userId);
 
       return data.signedUrl;
     }
   },
 
+  // ======================================================  
   // AUTHENTICATION & USER MANAGEMENT
+  // ======================================================  
   auth: {
     login: async (email: string, password: string) => {
       const { data, error } = await supabase.auth.signInWithPassword({ email, password });
-      if (error) throw new Error(error.message || "Login fallito");
+      if (error) throw new Error(error.message || 'Login fallito');
 
-      return api.users.get(data.session.user.id);
+      const userId = data.session?.user?.id;
+      if (!userId) throw new Error('Sessione senza utente.');
+
+      const userProfile = await api.users.get(userId);
+      if (!userProfile) {
+        throw new Error('Impossibile caricare il profilo utente.');
+      }
+
+      return userProfile;
     },
 
     register: async (email: string, password: string, userData: Partial<User>) => {
       const { data: authData, error: authError } = await supabase.auth.signUp({ email, password });
-      if (authError) throw new Error(authError.message || "Errore registrazione");
+      if (authError) throw new Error(authError.message || 'Errore registrazione');
 
       const session = authData.session;
       const userId = session?.user?.id || authData.user?.id;
-
-      if (!userId) throw new Error("ID utente non recuperabile.");
+      if (!userId) throw new Error('ID utente non recuperabile.');
 
       const userRole = userData.role || 'renter';
       const userRoles = userData.roles || [userRole];
 
       const { error: userDbError } = await supabase
-        .from("users")
+        .from('users')
         .upsert({
           id: userId,
-          email: email,
+          email,
           name: userData.name,
           role: userRole,
           roles: userRoles,
@@ -129,23 +169,39 @@ export const api = {
         .select();
 
       if (userDbError) {
-        console.error("User DB creation error:", userDbError);
-        return {
-          id: userId,
-          email: email,
-          name: userData.name || 'User',
-          role: userRole,
-          roles: userRoles,
-          status: 'active',
-          renterBalance: 0,
-          hubberBalance: 0,
-          referralCode: '',
-          avatar: `https://ui-avatars.com/api/?name=${userData.name}&background=random`,
-          isSuperHubber: false
-        } as User;
+        console.error('User DB creation error:', userDbError);
+        // fallback minimale
       }
 
-      return api.users.get(userId);
+      const profile = await api.users.get(userId);
+      if (profile) return profile;
+
+      // fallback finale in memoria
+      return {
+        id: userId,
+        email,
+        name: userData.name || 'User',
+        role: userRole,
+        roles: userRoles,
+        status: 'active',
+        renterBalance: 0,
+        hubberBalance: 0,
+        referralCode: userData.referralCode || '',
+        avatar: `https://ui-avatars.com/api/?name=${userData.name || 'User'}&background=random`,
+        isSuperHubber: false,
+        rating: 0,
+        isSuspended: false,
+        emailVerified: false,
+        phoneVerified: false,
+        idDocumentVerified: false,
+        verificationStatus: 'unverified',
+        address: undefined,
+        phoneNumber: undefined,
+        bio: undefined,
+        bankDetails: undefined,
+        hubberSince: undefined,
+        idDocumentUrl: undefined
+      } as User;
     },
 
     logout: async () => {
@@ -160,37 +216,75 @@ export const api = {
 
   users: {
     get: async (userId: string): Promise<User | null> => {
-      const { data: { user: authUser } } = await supabase.auth.getUser();
+      // 1) recupero utente auth
+      const { data: authData } = await supabase.auth.getUser();
+      const authUser = authData.user;
 
+      // 2) provo a leggere riga in public.users
       const { data: userRow, error } = await supabase
         .from('users')
         .select('*')
         .eq('id', userId)
-        .single();
+        .maybeSingle();
 
-      if (error || !userRow) {
-        if (authUser && authUser.id === userId) {
-          console.log("Auto-healing: Creating missing user row in public.users...");
-          const { data: newUserRow } = await supabase
-            .from("users")
-            .insert({
-              id: userId,
-              email: authUser.email,
-              name: authUser.email?.split('@')[0] || 'User',
-              role: 'renter',
-              roles: ['renter'],
-              avatar_url: `https://ui-avatars.com/api/?name=${authUser.email}&background=random`,
-              status: 'active'
-            })
-            .select()
-            .single();
-
-          if (newUserRow) return mapSupabaseUserToAppUser(newUserRow, authUser);
-        }
-        return null;
+      if (userRow && authUser) {
+        return mapSupabaseUserToAppUser(userRow, authUser);
       }
 
-      return mapSupabaseUserToAppUser(userRow, authUser || { id: userId, email: userRow.email });
+      // 3) se non esiste riga, provo ad auto-crearla MA NON blocco l’app se fallisce
+      if (!userRow && authUser) {
+        console.log('Auto-healing: creo riga mancante in public.users…');
+
+        const { data: newUserRow } = await supabase
+          .from('users')
+          .upsert({
+            id: authUser.id,
+            email: authUser.email,
+            name: authUser.email?.split('@')[0] || 'User',
+            role: 'renter',
+            roles: ['renter'],
+            avatar_url: `https://ui-avatars.com/api/?name=${authUser.email}&background=random`,
+            status: 'active',
+            created_at: new Date().toISOString()
+          }, { onConflict: 'id' })
+          .select()
+          .maybeSingle();
+
+        if (newUserRow) {
+          return mapSupabaseUserToAppUser(newUserRow, authUser);
+        }
+
+        // se l’upsert fallisce per RLS o altro, continuo con fallback
+        console.warn('Auto-healing fallito, uso profilo minimale in memoria.');
+        return {
+          id: authUser.id,
+          email: authUser.email || '',
+          name: authUser.email?.split('@')[0] || 'User',
+          role: 'renter',
+          roles: ['renter'],
+          status: 'active',
+          renterBalance: 0,
+          hubberBalance: 0,
+          referralCode: '',
+          avatar: `https://ui-avatars.com/api/?name=${authUser.email || 'User'}&background=random`,
+          isSuperHubber: false,
+          rating: 0,
+          isSuspended: false,
+          emailVerified: !!authUser.email_confirmed_at,
+          phoneVerified: false,
+          idDocumentVerified: false,
+          verificationStatus: 'unverified',
+          address: undefined,
+          phoneNumber: undefined,
+          bio: undefined,
+          bankDetails: undefined,
+          hubberSince: undefined,
+          idDocumentUrl: undefined
+        } as User;
+      }
+
+      // 4) se proprio non ho authUser, non posso costruire un profilo
+      return null;
     },
 
     update: async (user: User) => {
@@ -213,7 +307,11 @@ export const api = {
         hubber_balance: user.hubberBalance
       };
 
-      const { error } = await supabase.from('users').update(updateData).eq('id', user.id);
+      const { error } = await supabase
+        .from('users')
+        .update(updateData)
+        .eq('id', user.id);
+
       if (error) throw error;
       return user;
     },
@@ -231,15 +329,16 @@ export const api = {
         .eq('id', user.id);
 
       if (error) throw error;
-      return { ...user, roles: newRoles, role: 'hubber' };
+
+      return { ...user, roles: newRoles, role: 'hubber', hubberSince: new Date().toISOString() };
     }
   },
 
-  // =========================
-  // LISTINGS (ANNUNCI)
-  // =========================
+  // ======================================================  
+  // LISTINGS (ANNUNCI) – ancora basato su localStorage + MOCK
+  // (poi li porteremo su Supabase)
+  // ======================================================  
   listings: {
-    // Usa SEMPRE localStorage come sorgente principale
     getAll: async (): Promise<Listing[]> => {
       const stored = localStorage.getItem('listings');
       if (stored) {
@@ -253,14 +352,13 @@ export const api = {
       return MOCK_LISTINGS;
     },
 
-    // Crea sempre l’annuncio in locale. Poi prova a sincronizzarlo su Supabase SENZA mai lanciare errori.
     create: async (listing: Listing): Promise<Listing> => {
-      // 1) Aggiorno subito il locale (così MyListings e Home lo vedono al volo)
+      // 1) locale
       const current = await api.listings.getAll();
       const newList = [listing, ...current];
       localStorage.setItem('listings', JSON.stringify(newList));
 
-      // 2) Provo a sincronizzare su Supabase ma NON blocco niente se fallisce
+      // 2) best-effort Supabase (non deve bloccare l’app)
       try {
         const { data: { user } } = await supabase.auth.getUser();
         const hostId = listing.hostId || user?.id || null;
@@ -287,19 +385,15 @@ export const api = {
 
         const { error } = await supabase.from('listings').insert(payload);
         if (error) {
-          console.warn('Sync listing -> Supabase fallita (annuncio comunque ok in locale):', error.message);
-          alert("L'annuncio è stato creato, ma la sincronizzazione col server non è riuscita. Puoi comunque usarlo normalmente.");
+          console.warn('Sync listing -> Supabase fallita (annuncio ok in locale):', error.message);
         }
       } catch (err) {
-        console.warn('Errore inatteso durante la sync listing -> Supabase (ma annuncio creato in locale):', err);
-        alert("L'annuncio è stato creato, ma la sincronizzazione col server non è riuscita. Puoi comunque usarlo normalmente.");
+        console.warn('Errore inatteso durante sync listing -> Supabase:', err);
       }
 
-      // 3) Ritorno SEMPRE l’oggetto listing, senza eccezioni
       return listing;
     },
 
-    // Aggiorna locale + prova sync su Supabase
     update: async (listing: Listing): Promise<Listing> => {
       const current = await api.listings.getAll();
       const newList = current.map(l => l.id === listing.id ? listing : l);
@@ -335,7 +429,7 @@ export const api = {
           .eq('id', listing.id);
 
         if (error) {
-          console.warn('Sync update listing -> Supabase fallita (annuncio aggiornato comunque in locale):', error.message);
+          console.warn('Sync update listing -> Supabase fallita:', error.message);
         }
       } catch (err) {
         console.warn('Errore inatteso durante update listing -> Supabase:', err);
@@ -345,6 +439,9 @@ export const api = {
     }
   },
 
+  // ======================================================  
+  // BOOKINGS / WALLET / PAYOUTS / ADMIN MOCK
+  // ======================================================  
   bookings: {
     getAll: async () => {
       const stored = localStorage.getItem('bookings');
@@ -386,6 +483,9 @@ export const api = {
     getInvoices: async () => MOCK_INVOICES
   },
 
+  // ======================================================  
+  // INIT (MOCK DATA)
+  // ======================================================  
   init: async () => {
     if (!localStorage.getItem('listings')) {
       localStorage.setItem('listings', JSON.stringify(MOCK_LISTINGS));
