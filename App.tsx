@@ -18,9 +18,31 @@ import { DEFAULT_SYSTEM_CONFIG, DEMO_ADMIN } from './constants';
 import { api } from './services/api';
 import { supabase } from './lib/supabase';
 
-// =====================================================================================
-// VERSIONE CORRETTA – FIX ROTELLINA INFINITA + FLOW LOGIN + CARICAMENTO DATI
-// =====================================================================================
+const buildFallbackUser = (authUser: any): User => ({
+  id: authUser.id,
+  email: authUser.email || '',
+  name: authUser.email?.split('@')[0] || 'Utente',
+  role: 'hubber',                        // lo trattiamo come hubber così puoi pubblicare
+  roles: ['renter', 'hubber'],
+  status: 'active',
+  renterBalance: 0,
+  hubberBalance: 0,
+  referralCode: '',
+  avatar: `https://ui-avatars.com/api/?name=${authUser.email || 'User'}&background=random`,
+  isSuperHubber: false,
+  rating: 0,
+  isSuspended: false,
+  emailVerified: !!authUser.email_confirmed_at,
+  phoneVerified: false,
+  idDocumentVerified: false,
+  verificationStatus: 'unverified',
+  address: undefined,
+  phoneNumber: undefined,
+  bio: undefined,
+  bankDetails: undefined,
+  hubberSince: undefined,
+  idDocumentUrl: undefined
+});
 
 const App: React.FC = () => {
   const [currentView, setCurrentView] = useState<string>('home');
@@ -40,46 +62,39 @@ const App: React.FC = () => {
   const [systemConfig, setSystemConfig] = useState<SystemConfig>(DEFAULT_SYSTEM_CONFIG);
   const [activeMode, setActiveMode] = useState<ActiveMode>('renter');
 
-  // =====================================================================================
-  // 1️⃣ INIZIALIZZAZIONE CORRETTA (senza bloccare l’interfaccia)
-  // =====================================================================================
   useEffect(() => {
-
     const initApp = async () => {
-      console.log("🔄 Booting Renthubber App…");
+      console.log('🔄 Boot Renthubber…');
 
-      // 🔍 Controllo sessione
+      // 1) Controllo sessione auth
       const { data: sessionData } = await supabase.auth.getSession();
       const session = sessionData.session;
 
       if (session?.user) {
-        console.log("🔑 Sessione valida al boot:", session.user.id);
+        console.log('🔑 Sessione trovata al boot:', session.user.id);
 
-        const profile = await api.users.get(session.user.id);
+        // 👉 NON uso più api.users.get qui, vado diretto con auth user
+        const { data: authData } = await supabase.auth.getUser();
+        const authUser = authData.user || session.user;
 
-        if (profile) {
-          console.log("👤 Profilo caricato:", profile);
-          setCurrentUser(profile);
-
-          if (profile.roles.includes('admin')) {
-            setCurrentView('admin');
-          } else {
-            setCurrentView('dashboard');
-          }
+        if (authUser) {
+          const fallbackUser = buildFallbackUser(authUser);
+          setCurrentUser(fallbackUser);
+          setActiveMode('hubber');       // così hai modalità hubber attiva
+          setCurrentView('dashboard');
         } else {
-          console.warn("⚠️ Profilo non trovato -> logout forzato");
+          console.warn('⚠️ Nessun authUser nonostante la sessione, logout forzato.');
           await supabase.auth.signOut();
           setCurrentUser(null);
           setCurrentView('home');
         }
       } else {
-        console.log("🏠 Nessuna sessione -> home");
+        console.log('🏠 Nessuna sessione -> home');
         setCurrentUser(null);
         setCurrentView('home');
       }
 
-      // 🗃️ SOLO DOPO che l’utente è stato caricato
-      console.log("📦 Caricamento dati locali…");
+      // 2) Carico i dati mock/local
       await api.init();
       setListings(await api.listings.getAll());
       setTransactions(await api.wallet.getTransactions());
@@ -92,42 +107,32 @@ const App: React.FC = () => {
 
     initApp();
 
-    // =====================================================================================
-    // 2️⃣ LISTENER SUPABASE CORRETTO
-    // =====================================================================================
+    // 3) Listener Supabase molto semplice, SEMPRE con fallback user
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
       async (event, session) => {
-        console.log("⚡ Auth State Change:", event);
+        console.log('⚡ Auth State Change:', event);
 
         if (session?.user) {
-          const profile = await api.users.get(session.user.id);
-
-          if (profile) {
-            setCurrentUser(profile);
-
+          const { data: authData } = await supabase.auth.getUser();
+          const authUser = authData.user || session.user;
+          if (authUser) {
+            const fallbackUser = buildFallbackUser(authUser);
+            setCurrentUser(fallbackUser);
+            setActiveMode('hubber');
             if (event === 'SIGNED_IN') {
-              if (profile.roles.includes('admin')) {
-                setCurrentView('admin');
-              } else {
-                setCurrentView('dashboard');
-              }
+              setCurrentView('dashboard');
             }
           }
         } else {
           setCurrentUser(null);
-          setCurrentView('home');
           setActiveMode('renter');
+          setCurrentView('home');
         }
       }
     );
 
     return () => subscription.unsubscribe();
-
   }, []);
-
-  // =====================================================================================
-  // ACTIONS
-  // =====================================================================================
 
   const handleLogout = async () => {
     await api.auth.logout();
@@ -135,17 +140,17 @@ const App: React.FC = () => {
 
   const handleLoginSuccess = (user: User) => {
     setCurrentUser(user);
-    if (user.roles.includes('admin')) setCurrentView('admin');
-    else setCurrentView('dashboard');
+    setCurrentView('dashboard');
   };
 
   const handleAddListing = async (newListing: Listing) => {
     try {
+      console.log('DEBUG handleAddListing –', newListing);
       const saved = await api.listings.create(newListing);
       setListings(prev => [saved, ...prev]);
       setCurrentView('my-listings');
     } catch (error) {
-      console.error('Errore salvataggio annuncio:', error);
+      console.error("Errore salvataggio annuncio:", error);
       setListings(prev => [newListing, ...prev]);
       setCurrentView('my-listings');
     }
@@ -271,13 +276,8 @@ const App: React.FC = () => {
     setInvoices([newInvoice, ...invoices]);
   };
 
-  // =====================================================================================
-  // RENDER
-  // =====================================================================================
-
   return (
     <div className="min-h-screen flex flex-col font-sans text-gray-900 bg-gray-50">
-
       {currentView !== 'admin' && currentView !== 'become-hubber' && currentView !== 'hubber-edit' && (
         <Header 
           setView={setCurrentView} 
