@@ -23,62 +23,20 @@ const mapSupabaseUserToAppUser = (sbUser: any, authUser: any): User => {
 
     hubberSince: sbUser.hubber_since,
 
+    // Verifiche
     emailVerified: !!authUser.email_confirmed_at || sbUser.email_verified,
     phoneVerified: sbUser.phone_verified || false,
     idDocumentVerified: sbUser.id_document_verified || false,
     verificationStatus: sbUser.verification_status || 'unverified',
 
+    // Dati Personali
     address: sbUser.address,
     phoneNumber: sbUser.phone_number,
     bio: sbUser.bio,
-    bankDetails: sbUser.bank_details,
+    bankDetails: sbUser.bank_details, // JSONB column
 
+    // Documenti
     idDocumentUrl: sbUser.document_front_url
-  };
-};
-
-// --- HELPER: mapping LISTING DB -> APP ---
-const mapDbListingToAppListing = (row: any): Listing => {
-  // NB: qui NON abbiamo ancora i dati completi dell’owner; li useremo solo dove servono
-  return {
-    id: row.id,
-    hostId: row.host_id || row.owner_id,
-    title: row.title,
-    category: row.category,
-    subCategory: row.sub_category || '',
-    description: row.description || '',
-    price: Number(row.price) || 0,
-    priceUnit: (row.price_unit as any) || 'giorno',
-    images: [], // TODO: colonna/Storage in futuro
-    location: row.location || '',
-    coordinates: (row.lat !== null && row.lng !== null)
-      ? { lat: Number(row.lat), lng: Number(row.lng) }
-      : undefined,
-    rating: row.rating ?? 0,
-    reviewCount: row.review_count ?? 0,
-    reviews: [],
-    owner: {
-      id: row.host_id || row.owner_id,
-      name: 'Host',
-      email: '',
-      avatar: '',
-      role: 'hubber',
-      roles: ['hubber'],
-      rating: row.rating ?? 0,
-      isSuperHubber: false,
-      status: 'active',
-      isSuspended: false,
-      renterBalance: 0,
-      hubberBalance: 0,
-      referralCode: ''
-    } as any,
-    features: [],
-    rules: [],
-    deposit: Number(row.deposit) || 0,
-    status: row.status || 'published',
-    cancellationPolicy: row.cancellation_p || 'flexible',
-    techSpecs: undefined,
-    spaceSpecs: undefined
   };
 };
 
@@ -134,16 +92,16 @@ export const api = {
     }
   },
 
-  // AUTH & USERS
+  // AUTHENTICATION & USER MANAGEMENT
   auth: {
-    login: async (email, password) => {
+    login: async (email: string, password: string) => {
       const { data, error } = await supabase.auth.signInWithPassword({ email, password });
       if (error) throw new Error(error.message || "Login fallito");
 
       return api.users.get(data.session.user.id);
     },
 
-    register: async (email, password, userData: Partial<User>) => {
+    register: async (email: string, password: string, userData: Partial<User>) => {
       const { data: authData, error: authError } = await supabase.auth.signUp({ email, password });
       if (authError) throw new Error(authError.message || "Errore registrazione");
 
@@ -245,10 +203,12 @@ export const api = {
         phone_number: user.phoneNumber,
         address: user.address,
         bank_details: user.bankDetails,
+
         phone_verified: user.phoneVerified,
         id_document_verified: user.idDocumentVerified,
         verification_status: user.verificationStatus,
         is_suspended: user.isSuspended,
+
         renter_balance: user.renterBalance,
         hubber_balance: user.hubberBalance
       };
@@ -275,129 +235,113 @@ export const api = {
     }
   },
 
-  // --- LISTINGS: USA SUPABASE COME SORGENTE PRINCIPALE ---
+  // =========================
+  // LISTINGS (ANNUNCI)
+  // =========================
   listings: {
-    getAll: async () => {
-      try {
-        const { data, error } = await supabase
-          .from('listings')
-          .select('*')
-          .order('created_at', { ascending: false });
-
-        if (error) throw error;
-
-        const rows = data || [];
-        const mapped = rows.map(mapDbListingToAppListing);
-
-        // opzionale: sincronizza anche localStorage
-        localStorage.setItem('listings', JSON.stringify(mapped));
-        return mapped;
-      } catch (err) {
-        console.error('Errore nel leggere le listings da Supabase, uso i mock/local:', err);
-        const stored = localStorage.getItem('listings');
-        return stored ? JSON.parse(stored) : MOCK_LISTINGS;
+    // Usa SEMPRE localStorage come sorgente principale
+    getAll: async (): Promise<Listing[]> => {
+      const stored = localStorage.getItem('listings');
+      if (stored) {
+        try {
+          return JSON.parse(stored);
+        } catch (e) {
+          console.warn('Errore nel parse di localStorage.listings, resetto ai MOCK:', e);
+          localStorage.removeItem('listings');
+        }
       }
+      return MOCK_LISTINGS;
     },
 
-    create: async (listing: Listing) => {
-      // Paga Supabase: inseriamo SOLO le colonne esistenti nella tabella
-      const payload = {
-        owner_id: listing.hostId,
-        host_id: listing.hostId,
-        title: listing.title,
-        category: listing.category,
-        sub_category: listing.subCategory || null,
-        description: listing.description || '',
-        price: listing.price ?? 0,
-        price_unit: listing.priceUnit || 'giorno',
-        location: listing.location || '',
-        lat: listing.coordinates?.lat ?? null,
-        lng: listing.coordinates?.lng ?? null,
-        rating: listing.rating ?? 0,
-        review_count: listing.reviewCount ?? 0,
-        deposit: listing.deposit ?? 0,
-        status: listing.status || 'published',
-        cancellation_p: listing.cancellationPolicy || 'flexible',
-        completeness_: (listing as any).completeness || null
-      };
-
-      const { data, error } = await supabase
-        .from('listings')
-        .insert(payload)
-        .select('*')
-        .single();
-
-      if (error) {
-        console.error('Supabase insert listing failed:', error);
-        throw new Error('Errore durante il salvataggio dell’annuncio sul server.');
-      }
-
-      const savedFromDb = mapDbListingToAppListing(data);
-
-      // manteniamo nel listing i dati extra del front (images, owner, ecc.)
-      const merged: Listing = {
-        ...savedFromDb,
-        images: listing.images || [],
-        owner: listing.owner || savedFromDb.owner,
-        features: listing.features || [],
-        rules: listing.rules || []
-      };
-
-      // aggiorna anche localStorage
-      const stored = localStorage.getItem('listings');
-      const current: Listing[] = stored ? JSON.parse(stored) : [];
-      localStorage.setItem('listings', JSON.stringify([merged, ...current]));
-
-      return merged;
-    },
-
-    update: async (listing: Listing) => {
-      const payload = {
-        title: listing.title,
-        category: listing.category,
-        sub_category: listing.subCategory || null,
-        description: listing.description || '',
-        price: listing.price ?? 0,
-        price_unit: listing.priceUnit || 'giorno',
-        location: listing.location || '',
-        lat: listing.coordinates?.lat ?? null,
-        lng: listing.coordinates?.lng ?? null,
-        rating: listing.rating ?? 0,
-        review_count: listing.reviewCount ?? 0,
-        deposit: listing.deposit ?? 0,
-        status: listing.status || 'published',
-        cancellation_p: listing.cancellationPolicy || 'flexible',
-        completeness_: (listing as any).completeness || null
-      };
-
-      const { data, error } = await supabase
-        .from('listings')
-        .update(payload)
-        .eq('id', listing.id)
-        .select('*')
-        .single();
-
-      if (error) {
-        console.error('Supabase update listing failed:', error);
-        throw new Error('Errore durante l’aggiornamento dell’annuncio sul server.');
-      }
-
-      const updatedFromDb = mapDbListingToAppListing(data);
-      const merged: Listing = {
-        ...updatedFromDb,
-        images: listing.images || [],
-        owner: listing.owner || updatedFromDb.owner,
-        features: listing.features || [],
-        rules: listing.rules || []
-      };
-
-      // sync localStorage
-      const stored = localStorage.getItem('listings');
-      const current: Listing[] = stored ? JSON.parse(stored) : [];
-      const newList = current.map(l => (l.id === merged.id ? merged : l));
+    // Crea sempre l’annuncio in locale. Poi prova a sincronizzarlo su Supabase SENZA mai lanciare errori.
+    create: async (listing: Listing): Promise<Listing> => {
+      // 1) Aggiorno subito il locale (così MyListings e Home lo vedono al volo)
+      const current = await api.listings.getAll();
+      const newList = [listing, ...current];
       localStorage.setItem('listings', JSON.stringify(newList));
 
-      return merged;
+      // 2) Provo a sincronizzare su Supabase ma NON blocco niente se fallisce
+      try {
+        const { data: { user } } = await supabase.auth.getUser();
+        const hostId = listing.hostId || user?.id || null;
+
+        const payload: any = {
+          owner_id: hostId,
+          host_id: hostId,
+          title: listing.title,
+          category: listing.category,
+          sub_category: listing.subCategory,
+          description: listing.description,
+          price: listing.price,
+          price_unit: listing.priceUnit,
+          location: listing.location,
+          lat: listing.coordinates?.lat ?? null,
+          lng: listing.coordinates?.lng ?? null,
+          rating: listing.rating ?? 0,
+          review_count: listing.reviewCount ?? 0,
+          deposit: listing.deposit ?? 0,
+          status: listing.status ?? 'published',
+          cancellation_p: listing.cancellationPolicy ?? null,
+          completeness_: (listing as any).completeness ?? null
+        };
+
+        const { error } = await supabase.from('listings').insert(payload);
+        if (error) {
+          console.warn('Sync listing -> Supabase fallita (annuncio comunque ok in locale):', error.message);
+          alert("L'annuncio è stato creato, ma la sincronizzazione col server non è riuscita. Puoi comunque usarlo normalmente.");
+        }
+      } catch (err) {
+        console.warn('Errore inatteso durante la sync listing -> Supabase (ma annuncio creato in locale):', err);
+        alert("L'annuncio è stato creato, ma la sincronizzazione col server non è riuscita. Puoi comunque usarlo normalmente.");
+      }
+
+      // 3) Ritorno SEMPRE l’oggetto listing, senza eccezioni
+      return listing;
+    },
+
+    // Aggiorna locale + prova sync su Supabase
+    update: async (listing: Listing): Promise<Listing> => {
+      const current = await api.listings.getAll();
+      const newList = current.map(l => l.id === listing.id ? listing : l);
+      localStorage.setItem('listings', JSON.stringify(newList));
+
+      try {
+        const { data: { user } } = await supabase.auth.getUser();
+        const hostId = listing.hostId || user?.id || null;
+
+        const payload: any = {
+          owner_id: hostId,
+          host_id: hostId,
+          title: listing.title,
+          category: listing.category,
+          sub_category: listing.subCategory,
+          description: listing.description,
+          price: listing.price,
+          price_unit: listing.priceUnit,
+          location: listing.location,
+          lat: listing.coordinates?.lat ?? null,
+          lng: listing.coordinates?.lng ?? null,
+          rating: listing.rating ?? 0,
+          review_count: listing.reviewCount ?? 0,
+          deposit: listing.deposit ?? 0,
+          status: listing.status ?? 'published',
+          cancellation_p: listing.cancellationPolicy ?? null,
+          completeness_: (listing as any).completeness ?? null
+        };
+
+        const { error } = await supabase
+          .from('listings')
+          .update(payload)
+          .eq('id', listing.id);
+
+        if (error) {
+          console.warn('Sync update listing -> Supabase fallita (annuncio aggiornato comunque in locale):', error.message);
+        }
+      } catch (err) {
+        console.warn('Errore inatteso durante update listing -> Supabase:', err);
+      }
+
+      return listing;
     }
   },
 
@@ -443,14 +387,8 @@ export const api = {
   },
 
   init: async () => {
-    // Se Supabase funziona non tocchiamo localStorage, altrimenti mettiamo i mock
-    try {
-      const { error } = await supabase.from('listings').select('id').limit(1);
-      if (error) throw error;
-    } catch {
-      if (!localStorage.getItem('listings')) {
-        localStorage.setItem('listings', JSON.stringify(MOCK_LISTINGS));
-      }
+    if (!localStorage.getItem('listings')) {
+      localStorage.setItem('listings', JSON.stringify(MOCK_LISTINGS));
     }
   }
 };
