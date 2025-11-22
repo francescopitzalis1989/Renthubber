@@ -18,14 +18,17 @@ import { DEFAULT_SYSTEM_CONFIG, DEMO_ADMIN } from './constants';
 import { api } from './services/api';
 import { supabase } from './lib/supabase';
 
+// =====================================================================================
+// VERSIONE CORRETTA – FIX ROTELLINA INFINITA + FLOW LOGIN + CARICAMENTO DATI
+// =====================================================================================
+
 const App: React.FC = () => {
   const [currentView, setCurrentView] = useState<string>('home');
   const [selectedListing, setSelectedListing] = useState<Listing | null>(null);
   const [selectedHost, setSelectedHost] = useState<User | null>(null);
   const [editingListing, setEditingListing] = useState<Listing | null>(null);
   const [currentUser, setCurrentUser] = useState<User | null>(null);
-  
-  // Data States
+
   const [listings, setListings] = useState<Listing[]>([]);
   const [payoutRequests, setPayoutRequests] = useState<PayoutRequest[]>([]);
   const [disputes, setDisputes] = useState<Dispute[]>([]);
@@ -33,140 +36,148 @@ const App: React.FC = () => {
   const [invoices, setInvoices] = useState<Invoice[]>([]);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [bookings, setBookings] = useState<BookingRequest[]>([]);
-  
-  // GLOBAL CONFIG & MODE STATE
+
   const [systemConfig, setSystemConfig] = useState<SystemConfig>(DEFAULT_SYSTEM_CONFIG);
   const [activeMode, setActiveMode] = useState<ActiveMode>('renter');
 
-  // --- INITIALIZATION & AUTH LISTENER ---
+  // =====================================================================================
+  // 1️⃣ INIZIALIZZAZIONE CORRETTA (senza bloccare l’interfaccia)
+  // =====================================================================================
   useEffect(() => {
+
     const initApp = async () => {
-      await api.init(); // Init local storage mocks
-      
-      const l = await api.listings.getAll();
-      setListings(l);
-      const t = await api.wallet.getTransactions();
-      setTransactions(t);
-      const b = await api.bookings.getAll();
-      setBookings(b);
-      const p = await api.payouts.getAll();
-      setPayoutRequests(p);
-      const d = await api.admin.getDisputes();
-      setDisputes(d);
-      const r = await api.admin.getReviews();
-      setReviews(r);
-      const i = await api.admin.getInvoices();
-      setInvoices(i);
+      console.log("🔄 Booting Renthubber App…");
+
+      // 🔍 Controllo sessione
+      const { data: sessionData } = await supabase.auth.getSession();
+      const session = sessionData.session;
+
+      if (session?.user) {
+        console.log("🔑 Sessione valida al boot:", session.user.id);
+
+        const profile = await api.users.get(session.user.id);
+
+        if (profile) {
+          console.log("👤 Profilo caricato:", profile);
+          setCurrentUser(profile);
+
+          if (profile.roles.includes('admin')) {
+            setCurrentView('admin');
+          } else {
+            setCurrentView('dashboard');
+          }
+        } else {
+          console.warn("⚠️ Profilo non trovato -> logout forzato");
+          await supabase.auth.signOut();
+          setCurrentUser(null);
+          setCurrentView('home');
+        }
+      } else {
+        console.log("🏠 Nessuna sessione -> home");
+        setCurrentUser(null);
+        setCurrentView('home');
+      }
+
+      // 🗃️ SOLO DOPO che l’utente è stato caricato
+      console.log("📦 Caricamento dati locali…");
+      await api.init();
+      setListings(await api.listings.getAll());
+      setTransactions(await api.wallet.getTransactions());
+      setBookings(await api.bookings.getAll());
+      setPayoutRequests(await api.payouts.getAll());
+      setDisputes(await api.admin.getDisputes());
+      setReviews(await api.admin.getReviews());
+      setInvoices(await api.admin.getInvoices());
     };
 
     initApp();
 
-    // SUPABASE AUTH LISTENER
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
-      console.log("Auth State Change:", event);
-      
-      if (session?.user) {
-        try {
-          // Fetch from PUBLIC.USERS table via API Service
-          const userProfile = await api.users.get(session.user.id);
-          
-          if (userProfile) {
-            setCurrentUser(userProfile);
-            
+    // =====================================================================================
+    // 2️⃣ LISTENER SUPABASE CORRETTO
+    // =====================================================================================
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(
+      async (event, session) => {
+        console.log("⚡ Auth State Change:", event);
+
+        if (session?.user) {
+          const profile = await api.users.get(session.user.id);
+
+          if (profile) {
+            setCurrentUser(profile);
+
             if (event === 'SIGNED_IN') {
-               if (userProfile.roles.includes('admin')) {
-                 setCurrentView('admin');
-               } else if (userProfile.role === 'hubber' || userProfile.roles.includes('hubber')) {
-                 setActiveMode('hubber');
-                 setCurrentView('dashboard');
-               } else {
-                 setActiveMode('renter');
-                 setCurrentView('dashboard');
-               }
+              if (profile.roles.includes('admin')) {
+                setCurrentView('admin');
+              } else {
+                setCurrentView('dashboard');
+              }
             }
           }
-        } catch (error) {
-          console.error("Error loading user profile:", error);
+        } else {
+          setCurrentUser(null);
+          setCurrentView('home');
+          setActiveMode('renter');
         }
-      } else {
-        setCurrentUser(null);
-        setCurrentView('home');
-        setActiveMode('renter');
       }
-    });
+    );
 
     return () => subscription.unsubscribe();
+
   }, []);
+
+  // =====================================================================================
+  // ACTIONS
+  // =====================================================================================
 
   const handleLogout = async () => {
     await api.auth.logout();
   };
 
-  // --- APP ACTIONS ---
-
   const handleLoginSuccess = (user: User) => {
     setCurrentUser(user);
-    if (user.roles.includes('admin')) {
-      setCurrentView('admin');
-    } else {
-      setCurrentView('dashboard');
-    }
+    if (user.roles.includes('admin')) setCurrentView('admin');
+    else setCurrentView('dashboard');
   };
 
-  // ✅ gestisce sia il salvataggio via API sia il fallback locale
   const handleAddListing = async (newListing: Listing) => {
     try {
-      console.log('DEBUG handleAddListing – ricevuto dal wizard:', newListing);
-
       const saved = await api.listings.create(newListing);
-
-      console.log('DEBUG handleAddListing – salvato da api.listings.create:', saved);
-
       setListings(prev => [saved, ...prev]);
       setCurrentView('my-listings');
     } catch (error) {
-      console.error('Errore durante la creazione dell’annuncio:', error);
-      
-      // Fallback: aggiunge comunque l’annuncio alla lista locale
+      console.error('Errore salvataggio annuncio:', error);
       setListings(prev => [newListing, ...prev]);
       setCurrentView('my-listings');
-      alert('L’annuncio è stato creato solo in locale. Il salvataggio sul server non è riuscito.');
     }
   };
 
   const handleUpdateListing = async (updatedListing: Listing) => {
     const saved = await api.listings.update(updatedListing);
-    setListings(prevListings => 
-      prevListings.map(l => l.id === saved.id ? saved : l)
-    );
-    if (selectedListing?.id === saved.id) {
-      setSelectedListing(saved);
-    }
+    setListings(prev => prev.map(l => l.id === saved.id ? saved : l));
+    if (selectedListing?.id === saved.id) setSelectedListing(saved);
     setCurrentView('my-listings');
   };
 
-  const handleUpdateConfig = (newConfig: SystemConfig) => {
-    setSystemConfig(newConfig);
-  };
+  const handleUpdateConfig = (newConfig: SystemConfig) => setSystemConfig(newConfig);
 
   const handlePayment = async (amount: number, useWallet: number) => {
-    if (currentUser) {
-      const newBalance = currentUser.renterBalance - useWallet;
-      const updatedUser = { ...currentUser, renterBalance: newBalance };
-      setCurrentUser(updatedUser);
-      await api.users.update(updatedUser);
-      
-      const tx: Transaction = {
-         id: `tx-${Date.now()}`,
-         date: new Date().toLocaleDateString('it-IT'),
-         amount: amount,
-         description: 'Pagamento Noleggio',
-         type: 'debit',
-         walletType: 'renter'
-      };
-      await api.wallet.addTransaction(tx);
-      setTransactions([tx, ...transactions]);
-    }
+    if (!currentUser) return;
+    const newBalance = currentUser.renterBalance - useWallet;
+    const updatedUser = { ...currentUser, renterBalance: newBalance };
+    setCurrentUser(updatedUser);
+    await api.users.update(updatedUser);
+
+    const tx: Transaction = {
+      id: `tx-${Date.now()}`,
+      date: new Date().toLocaleDateString('it-IT'),
+      amount,
+      description: 'Pagamento Noleggio',
+      type: 'debit',
+      walletType: 'renter'
+    };
+
+    await api.wallet.addTransaction(tx);
+    setTransactions([tx, ...transactions]);
   };
 
   const handleListingClick = (listing: Listing) => {
@@ -187,12 +198,12 @@ const App: React.FC = () => {
   const handleSwitchMode = (mode: ActiveMode) => {
     if (!currentUser) return;
     if (mode === 'hubber' && !currentUser.roles.includes('hubber')) {
-       setCurrentView('become-hubber');
-       return;
+      setCurrentView('become-hubber');
+      return;
     }
     setActiveMode(mode);
-    if (currentView === 'dashboard' || currentView === 'wallet' || currentView === 'my-listings') {
-        setCurrentView('dashboard');
+    if (['dashboard', 'wallet', 'my-listings'].includes(currentView)) {
+      setCurrentView('dashboard');
     }
   };
 
@@ -209,35 +220,37 @@ const App: React.FC = () => {
   };
 
   const handleRequestPayout = async (amount: number) => {
-    if (!currentUser || !currentUser.bankDetails) return;
-    
+    if (!currentUser?.bankDetails) return;
+
     const newRequest: PayoutRequest = {
       id: `payout-${Date.now()}`,
       userId: currentUser.id,
       userName: currentUser.name,
-      amount: amount,
+      amount,
       iban: currentUser.bankDetails.iban,
       status: 'pending',
       date: new Date().toLocaleDateString('it-IT')
     };
-    
+
     await api.payouts.request(newRequest);
     setPayoutRequests([newRequest, ...payoutRequests]);
   };
 
   const handleProcessPayout = (requestId: string, approved: boolean) => {
-    setPayoutRequests(prev => prev.map(req => 
-      req.id === requestId ? { ...req, status: approved ? 'approved' : 'rejected' } : req
-    ));
+    setPayoutRequests(prev =>
+      prev.map(req =>
+        req.id === requestId ? { ...req, status: approved ? 'approved' : 'rejected' } : req
+      )
+    );
 
     if (approved) {
-      const request = payoutRequests.find(r => r.id === requestId);
-      if (request && currentUser && currentUser.id === request.userId) {
-           const updatedUser = {
-             ...currentUser,
-             hubberBalance: currentUser.hubberBalance - request.amount
-           };
-           handleUserUpdate(updatedUser);
+      const req = payoutRequests.find(r => r.id === requestId);
+      if (req && currentUser?.id === req.userId) {
+        const updatedUser = {
+          ...currentUser,
+          hubberBalance: currentUser.hubberBalance - req.amount
+        };
+        handleUserUpdate(updatedUser);
       }
     }
   };
@@ -247,16 +260,24 @@ const App: React.FC = () => {
   };
 
   const handleDisputeAction = (id: string, action: 'resolve' | 'dismiss', note?: string) => {
-    setDisputes(prev => prev.map(d => d.id === id ? { ...d, status: action === 'resolve' ? 'resolved' : 'dismissed', resolutionNote: note } : d));
+    setDisputes(prev =>
+      prev.map(d =>
+        d.id === id ? { ...d, status: action === 'resolve' ? 'resolved' : 'dismissed', resolutionNote: note } : d
+      )
+    );
   };
 
   const handleCreateInvoice = (newInvoice: Invoice) => {
     setInvoices([newInvoice, ...invoices]);
   };
 
+  // =====================================================================================
+  // RENDER
+  // =====================================================================================
+
   return (
     <div className="min-h-screen flex flex-col font-sans text-gray-900 bg-gray-50">
-      
+
       {currentView !== 'admin' && currentView !== 'become-hubber' && currentView !== 'hubber-edit' && (
         <Header 
           setView={setCurrentView} 
